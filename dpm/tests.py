@@ -68,6 +68,10 @@ def test_mnist_forward_diffusion():
 
     key = jax.random.PRNGKey(0)
     diff = Diffusion(model=None, diffusion_steps=50)
+    
+    # Apply the uniform noise for images data to make the initial data more suitable for continous diffusion -> (-1.0/255, 1.0/255) for Image data
+    X = jax.random.uniform(key, shape=X.shape, minval=-1.0, maxval=1.0) * 1.0/255 + X
+    
     X_jax = jnp.array(X)
     forward_trajectory = diff.forward(X_jax, key)  # (1000, 100, 784)
 
