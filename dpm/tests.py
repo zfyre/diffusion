@@ -1,4 +1,17 @@
-def test_gaussian_forward_diffusion():
+import argparse
+
+def test(func):
+    """Decorator to mark a function as a test and add test metadata."""
+    func.__test__ = True  # Mark the function as a test
+    def wrapper(*args, verbose=False, **kwargs):
+        print(f"Running test: {func.__name__}")
+        return func(*args, verbose=verbose, **kwargs)
+    wrapper.__test__ = True  # Also mark the wrapper as a test
+    wrapper.__name__ = func.__name__  # Preserve the original function name
+    return wrapper
+
+@test
+def gaussian_forward_diffusion(verbose=False):
     """
     Test the Gaussian forward diffusion process on a Swiss Roll dataset.
     This function generates a Swiss Roll dataset, applies the forward diffusion process,
@@ -20,9 +33,9 @@ def test_gaussian_forward_diffusion():
     # ========== Apply Forward Diffusion ========== #
 
     key = jax.random.PRNGKey(0)
-    diff = Diffusion(model=None, diffusion_steps=50)
+    diff = Diffusion(model=None, diffusion_steps=50, verbose=verbose)
     X_jax = jnp.array(X)
-    forward_trajectory = diff.forward(X_jax, key)  # (1000, 100, 2)
+    forward_trajectory = diff.forward(X_jax, key)
 
     # ========== Plot Results ========== #
 
@@ -43,7 +56,8 @@ def test_gaussian_forward_diffusion():
     plt.tight_layout()
     plt.show()
 
-def test_mnist_forward_diffusion():
+@test
+def mnist_forward_diffusion(verbose=False):
     """
     Test the Gaussian forward diffusion process on MNIST dataset.
     This function loads a subset of MNIST data, applies the forward diffusion process,
@@ -67,13 +81,13 @@ def test_mnist_forward_diffusion():
     # ========== Apply Forward Diffusion ========== #
 
     key = jax.random.PRNGKey(0)
-    diff = Diffusion(model=None, diffusion_steps=50)
+    diff = Diffusion(model=None, diffusion_steps=100, verbose=verbose)
     
     # Apply the uniform noise for images data to make the initial data more suitable for continous diffusion -> (-1.0/255, 1.0/255) for Image data
     X = jax.random.uniform(key, shape=X.shape, minval=-1.0, maxval=1.0) * 1.0/255 + X
     
     X_jax = jnp.array(X)
-    forward_trajectory = diff.forward(X_jax, key)  # (1000, 100, 784)
+    forward_trajectory = diff.forward(X_jax, key)
 
     # ========== Plot Results ========== #
 
@@ -100,5 +114,48 @@ def test_mnist_forward_diffusion():
     plt.show()
     
 if __name__ == "__main__":
-    test_gaussian_forward_diffusion()
-    test_mnist_forward_diffusion()
+    parser = argparse.ArgumentParser(description="Run diffusion model tests")
+    parser.add_argument("--test", type=str, help="Run a specific test by name")
+    parser.add_argument("-a", dest="run_all", action="store_true", help="Run all tests")
+    parser.add_argument("-A", dest="run_all", action="store_true", help="Run all tests (same as -a)")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    args = parser.parse_args()
+
+    # Get all test functions - look for both the decorator and the wrapper
+    test_functions = [name for name, func in globals().items() 
+                     if callable(func) and 
+                     (hasattr(func, '__test__') or 
+                      (hasattr(func, '__wrapped__') and hasattr(func.__wrapped__, '__test__')))]
+    
+    if not test_functions:
+        print("No test functions found! Make sure test functions are decorated with @test")
+        exit(1)
+
+    if args.verbose:
+        print(f"Found test functions: {', '.join(test_functions)}")
+    
+    if args.run_all:
+        print("Running all tests...")
+        for test_name in test_functions:
+            test_func = globals()[test_name]
+            try:
+                test_func(verbose=args.verbose)
+                print(f"✓ {test_name} passed")
+            except Exception as e:
+                print(f"✗ {test_name} failed with error: {str(e)}")
+    elif args.test:
+        if args.test not in test_functions:
+            print(f"Error: Test '{args.test}' not found. Available tests: {', '.join(test_functions)}")
+            exit(1)
+        test_func = globals()[args.test]
+        try:
+            test_func(verbose=args.verbose)
+            print(f"✓ {args.test} passed")
+        except Exception as e:
+            print(f"✗ {args.test} failed with error: {str(e)}")
+            exit(1)
+    else:
+        print("Please specify either --test <test_name> or -a/-A to run all tests")
+        print("Available tests:", ", ".join(test_functions))
+        exit(1)
+    

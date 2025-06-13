@@ -8,12 +8,14 @@ class GaussianScheduler:
                 diffusion_steps:int=40,# 40 steps taken in DPM,
                 batch_size:int=16,
                 is_trainable:bool=False,
+                verbose:bool=False
             ):
         self.type = type
         self.beta_bounds = beta_bounds
         self.steps = diffusion_steps
         self.batch_size = batch_size
         self.is_trainable = is_trainable
+        self.verbose = verbose
         if is_trainable:
             # TODO: initialize the model whih will produce the schedule
             pass
@@ -44,12 +46,15 @@ class GaussianScheduler:
 
 class GaussianKernel:
 
-    def __init__(self, diffusion_steps, batch_size, scheduler=None):
+    def __init__(self, diffusion_steps, batch_size, scheduler=None, verbose=False):
+        self.verbose = verbose
         if scheduler is None:
-            self.scheduler = GaussianScheduler(diffusion_steps=diffusion_steps, batch_size=batch_size)
-            print(f"[INFO] Using default GaussianScheduler: {self.scheduler}")
+            self.scheduler = GaussianScheduler(diffusion_steps=diffusion_steps, batch_size=batch_size, verbose=self.verbose)
+            if self.verbose:
+                print(f"[INFO] Using default GaussianScheduler: {self.scheduler}")
         else:
-            print(f"[INFO] Using provided Scheduler: {scheduler}")
+            if self.verbose:
+                print(f"[INFO] Using provided Scheduler: {scheduler}")
             self.scheduler = scheduler
     
     # TODO: currently the dtype of the timesteps in int but it'll be float when used with models, and eventually it'll be between 0 and 1
@@ -83,11 +88,12 @@ class GaussianKernel:
         pass
      
 class Diffusion:
-    def __init__(self, model, diffusion_steps=1000, diffusion_kernel=None, device=None):
+    def __init__(self, model, diffusion_steps=1000, diffusion_kernel=None, device=None, verbose=False):
+        self.verbose = verbose
         self.device = jax.default_backend() if device is None else device
         self.model = model
         self.steps = diffusion_steps
-        self.kernel = GaussianKernel(diffusion_steps=diffusion_steps, batch_size=16) if diffusion_kernel is None else diffusion_kernel
+        self.kernel = GaussianKernel(diffusion_steps=diffusion_steps, batch_size=16, verbose=self.verbose) if diffusion_kernel is None else diffusion_kernel
 
     def forward(self, x_0: jnp.ndarray, key:jax.Array) -> jnp.ndarray:
         # Returns the `forward trajectory` in form of jnp.ndarray
@@ -96,7 +102,8 @@ class Diffusion:
         for step in range(self.steps):
             timestep = jnp.broadcast_to(jnp.array([step+1]), shape=(N,))
             x_t, key = self.kernel.forward(x_0, timestep, key)
-            print(f"[INFO] Step {step+1}/{self.steps}, x_t shape: {x_t.shape}, key: {key}, device: {self.device}, dtype: {x_t.dtype}")
+            if self.verbose:
+                print(f"[INFO] Step {step+1}/{self.steps}, x_t shape: {x_t.shape}, key: {key}, device: {self.device}, dtype: {x_t.dtype}")
             forward_trajectory.append(x_t) # [T, N, D]
         return jnp.stack(forward_trajectory, axis=1)  # [N, T, D]
 
