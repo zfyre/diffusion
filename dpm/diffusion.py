@@ -1,5 +1,8 @@
 import jax
 import jax.numpy as jnp
+from model import ReverseDiffusion
+import jax.random as random
+import flax.linen as nn
 
 class GaussianScheduler:
     def __init__(self,
@@ -59,8 +62,8 @@ class GaussianKernel:
     
     # TODO: currently the dtype of the timesteps in int but it'll be float when used with models, and eventually it'll be between 0 and 1
     def forward(self, x_0: jnp.ndarray, t: jnp.ndarray, key:jax.Array) -> jnp.ndarray:
-        N, D = x_0.shape
-        assert t.shape == (N,), "t should be a 1D array with the same batch size as x_0"
+        B, C, H, W = x_0.shape
+        assert t.shape == (B,), "t should be a 1D array with the same batch size as x_0"
         assert jnp.all(t <= self.scheduler.steps) and jnp.all(t >= 1), "t should be less than or equal to the number of diffusion steps"
         
         t = t-1  # Adjusting t to be zero-indexed
@@ -70,10 +73,11 @@ class GaussianKernel:
         epsilon = jax.random.normal(subkey, shape=x_0.shape)
         
         alpha_cumprod_t = jnp.take(self.scheduler.alpha_cumprod, t)  # Shape: (batch_size,)
-        alpha_cumprod_t = jnp.expand_dims(alpha_cumprod_t, axis=-1)  # Shape: (batch_size, 1)
-        assert alpha_cumprod_t.shape == (N, 1), "alpha_cumprod_t should have shape (batch_size, 1)"
+        alpha_cumprod_t = jnp.expand_dims(alpha_cumprod_t, axis=(-1, -2, -3))  # Shape: (batch_size, 1, 1, 1)
+        assert alpha_cumprod_t.shape == (B, 1, 1, 1), "alpha_cumprod_t should have shape (batch_size, 1, 1, 1)"
         assert not jnp.any(jnp.isnan(alpha_cumprod_t)), "NaN values detected in alpha_cumprod_t"
 
+        alpha_cumprod_t = jnp.broadcast_to(alpha_cumprod_t, (B, C, H, W))
         x_t = jnp.sqrt(alpha_cumprod_t) * x_0 + jnp.sqrt(1 - alpha_cumprod_t) * epsilon
         assert not jnp.any(jnp.isnan(x_t)), "NaN values detected in x_t"
         
@@ -88,32 +92,71 @@ class GaussianKernel:
         pass
      
 class Diffusion:
-    def __init__(self, model, diffusion_steps=1000, diffusion_kernel=None, device=None, verbose=False):
+    def __init__(self, model: nn.Module, input_shape, key, diffusion_steps=1000, diffusion_kernel=None, device=None, verbose=False):
         self.verbose = verbose
         self.device = jax.default_backend() if device is None else device
-        self.model = model
         self.steps = diffusion_steps
         self.kernel = GaussianKernel(diffusion_steps=diffusion_steps, batch_size=16, verbose=self.verbose) if diffusion_kernel is None else diffusion_kernel
+        self.model = model
+        self.B, self.C, self.H, self.W = input_shape
+        self.key = key
+        self.variables = self.model.init(
+            self.key,
+            jnp.ones((self.B, self.C, self.H, self.W)),
+            t=jnp.ones((self.B,), dtype=jnp.int32),
+            beta_t=jnp.ones((self.B,)),
+            key=self.key
+        )
 
-    def forward(self, x_0: jnp.ndarray, key:jax.Array) -> jnp.ndarray:
-        # Returns the `forward trajectory` in form of jnp.ndarray
+    def forward_trajectory(self, x_0: jnp.ndarray, key=None) -> tuple:
+        if key is None:
+            key = self.key
         forward_trajectory = []
-        N, D = x_0.shape
+        B, C, H, W = x_0.shape
         for step in range(self.steps):
-            timestep = jnp.broadcast_to(jnp.array([step+1]), shape=(N,))
+            timestep = jnp.broadcast_to(jnp.array([step+1]), shape=(B,))
             x_t, key = self.kernel.forward(x_0, timestep, key)
             if self.verbose:
                 print(f"[INFO] Step {step+1}/{self.steps}, x_t shape: {x_t.shape}, key: {key}, device: {self.device}, dtype: {x_t.dtype}")
-            forward_trajectory.append(x_t) # [T, N, D]
-        return jnp.stack(forward_trajectory, axis=1)  # [N, T, D]
+            forward_trajectory.append(x_t)
+        return jnp.stack(forward_trajectory, axis=1), key  # [B, T, C, H, W], key
 
-    def reverse(self, x_t: jnp.ndarray, key:jax.Array) -> jnp.ndarray:
-        # returns the 'reverse trjectory` in form of jnp.ndarray
-        return self.model.forward(x_t, key)
+    def reverse_trajectory(self, x_T: jnp.ndarray, key=None) -> tuple:
+        if key is None:
+            key = self.key
+        x_t = x_T
+        reverse_trajectory = []
+        B, C, H, W = x_t.shape
+        for step in range(self.steps):
+            beta_t = self.kernel.scheduler.betas[step]
+            beta_t = jnp.broadcast_to(beta_t, shape=(B,))
+            timestep = jnp.broadcast_to(jnp.array([step+1]), shape=(B,))
+            x_t, _, _, key = self.model.apply(self.variables, x_t, timestep, beta_t=beta_t, key=key)
+            if self.verbose:
+                print(f"[INFO] Step {step+1}/{self.steps}, x_t shape: {x_t.shape}, key: {key}, device: {self.device}, dtype: {x_t.dtype}")
+            reverse_trajectory.append(x_t)
+        return jnp.stack(reverse_trajectory[::-1], axis=1), key  # [B, T, C, H, W], key
 
-    def sample(self, shape: tuple, key:jax.Array) -> jnp.ndarray:
-        x_T = self.kernel.sample(shape, t=self.steps, key=key)
-        return self.reverse(x_T, key=key)  # The first instance is the result of sampling from the trained model
+    def reverse(self, x_t: jnp.ndarray, t: int, key=None) -> tuple:
+        if key is None:
+            key = self.key
+        B, C, H, W = x_t.shape
+        beta_t = self.kernel.scheduler.betas[t]
+        beta_t = jnp.broadcast_to(beta_t, shape=(B,))
+        timestep = jnp.broadcast_to(jnp.array([t+1]), shape=(B,))
+        x_t, _, _, key = self.model.apply(self.variables, x_t, timestep, beta_t=beta_t, key=key)
+        return x_t, key
+    
+    def forward(self, x_0: jnp.ndarray, t: int, key=None) -> tuple:
+        if key is None:
+            key = self.key
+        B, C, H, W = x_0.shape
+        timestep = jnp.broadcast_to(jnp.array([t+1]), shape=(B,))
+        x_t, key = self.kernel.forward(x_0, timestep, key)
+        return x_t, key
+    
+    def sample(self, shape: tuple) -> jnp.ndarray:
+        pass
 
 
 # Can work on predefined toy problems:
@@ -146,4 +189,15 @@ class Diffusion:
     # print(f"Forward trajectory shape: {forward_trajectory.shape}")
     # print(f"Forward trajectory: {forward_trajectory}")  
     
+if __name__ == "__main__":
+    key = jax.random.PRNGKey(0)  # Random key for JAX
+    model = ReverseDiffusion(features=16, channels=3, diffusion_steps=10)
+    diff = Diffusion(model=model, input_shape=(2, 3, 4, 8), key=key, diffusion_steps=10)
+    x_0 = jnp.ones((2, 3, 4, 8))  # (B, C, H, W)
+    forward_trajectory, key = diff.forward(x_0)
+    print(f"Forward trajectory shape: {forward_trajectory.shape}")
+
+    reverse_trajectory, key = diff.reverse(jnp.ones((2, 3, 4, 8)), key)
+    print(f"Reverse trajectory shape: {reverse_trajectory.shape}")
+
 

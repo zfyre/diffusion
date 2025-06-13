@@ -29,6 +29,10 @@ def gaussian_forward_diffusion(verbose=False):
     X, _ = make_swiss_roll(n_samples=1000, noise=0.1)
     X = X[:, [0, 2]]  # Take x and z for 2D
     X = (X - X.mean(axis=0)) / X.std(axis=0)  # Normalize
+    
+    # Reshape to (batch_size, channels, height, width) format
+    # For 2D data, we'll use height=1 and width=2 to represent the 2D points
+    X = X.reshape(-1, 1, 1, 2)  # Shape: (1000, 1, 1, 2)
 
     # ========== Apply Forward Diffusion ========== #
 
@@ -43,9 +47,11 @@ def gaussian_forward_diffusion(verbose=False):
     plot_steps = np.linspace(0, forward_trajectory.shape[1] - 1, 10, dtype=int)
 
     for i, step in enumerate(plot_steps):
+        # Reshape back to 2D points for plotting
+        points = np.array(forward_trajectory[:, step, 0, 0, :])  # Shape: (1000, 2)
         axes[i].scatter(
-            np.array(forward_trajectory[:, step, 0]),
-            np.array(forward_trajectory[:, step, 1]),
+            points[:, 0],
+            points[:, 1],
             alpha=0.5,
             s=5
         )
@@ -73,8 +79,8 @@ def mnist_forward_diffusion(verbose=False):
     # ========== Load MNIST Data ========== #
     
     (X_train, _), _ = mnist.load_data()
-    # Take first 1000 samples and reshape to (N, 784)
-    X = X_train[:1000].reshape(-1, 28*28).astype('float32')
+    # Take first 1000 samples and reshape to (N, 1, 28, 28) - adding channel dimension
+    X = X_train[:1000].reshape(-1, 1, 28, 28).astype('float32')
     # Normalize to [-1, 1]
     X = (X / 127.5) - 1.0
 
@@ -97,14 +103,14 @@ def mnist_forward_diffusion(verbose=False):
     # Plot first row - single image evolution
     sample_idx = 0
     for i, step in enumerate(plot_steps):
-        img = np.array(forward_trajectory[sample_idx, step]).reshape(28, 28)
+        img = np.array(forward_trajectory[sample_idx, step, 0])  # Remove channel dimension for plotting
         axes[0, i].imshow(img, cmap='gray')
         axes[0, i].axis('off')
         axes[0, i].set_title(f"t = {step}")
 
     # Plot second row - average of all images
     for i, step in enumerate(plot_steps):
-        avg_img = np.mean(np.array(forward_trajectory[:, step]), axis=0).reshape(28, 28)
+        avg_img = np.mean(np.array(forward_trajectory[:, step, 0]), axis=0)  # Remove channel dimension for plotting
         axes[1, i].imshow(avg_img, cmap='gray')
         axes[1, i].axis('off')
         axes[1, i].set_title(f"t = {step} (avg)")
@@ -113,6 +119,85 @@ def mnist_forward_diffusion(verbose=False):
     plt.tight_layout()
     plt.show()
     
+@test
+def gaussian_reverse_diffusion(verbose=False):
+    """
+    Test both forward and reverse diffusion processes on a Swiss Roll dataset.
+    This function generates a Swiss Roll dataset, applies forward diffusion,
+    then attempts to reverse the process using a randomly initialized model.
+    Visualizes both forward and reverse trajectories.
+    """
+    import jax
+    import jax.numpy as jnp
+    from diffusion import Diffusion
+    from model import ReverseDiffusion
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from sklearn.datasets import make_swiss_roll
+    
+    # ========== Generate Swiss Roll Data ========== #
+    X, _ = make_swiss_roll(n_samples=1000, noise=0.1)
+    X = X[:, [0, 2]]  # Take x and z for 2D
+    X = (X - X.mean(axis=0)) / X.std(axis=0)  # Normalize
+    
+    # Reshape to (batch_size, channels, height, width) format
+    X = X.reshape(-1, 1, 1, 2)  # Shape: (1000, 1, 1, 2)
+
+    # ========== Initialize Model and Diffusion ========== #
+    key = jax.random.PRNGKey(0)
+    model = ReverseDiffusion(features=16, channels=1, diffusion_steps=50)
+    diff = Diffusion(
+        model=model,
+        input_shape=(1000, 1, 1, 2),  # (batch_size, channels, height, width)
+        key=key,
+        diffusion_steps=50,
+        verbose=verbose
+    )
+
+    # ========== Forward Diffusion ========== #
+    X_jax = jnp.array(X)
+    forward_trajectory = diff.forward(X_jax)
+
+    # ========== Reverse Diffusion ========== #
+    # Start from the last noisy sample
+    x_T = forward_trajectory[:, -1]  # Shape: (1000, 1, 1, 2)
+    reverse_trajectory = diff.reverse(x_T)
+
+    # ========== Plot Results ========== #
+    fig, axes = plt.subplots(2, 10, figsize=(40, 8))
+    plot_steps = np.linspace(0, forward_trajectory.shape[1] - 1, 10, dtype=int)
+
+    # Plot forward diffusion (top row)
+    for i, step in enumerate(plot_steps):
+        points = np.array(forward_trajectory[:, step, 0, 0, :])  # Shape: (1000, 2)
+        axes[0, i].scatter(
+            points[:, 0],
+            points[:, 1],
+            alpha=0.5,
+            s=5
+        )
+        axes[0, i].set_title(f"Forward t = {step}")
+        axes[0, i].set_xlim(-4, 4)
+        axes[0, i].set_ylim(-4, 4)
+
+    # Plot reverse diffusion (bottom row)
+    for i, step in enumerate(plot_steps):
+        points = np.array(reverse_trajectory[:, step, 0, 0, :])  # Shape: (1000, 2)
+        axes[1, i].scatter(
+            points[:, 0],
+            points[:, 1],
+            alpha=0.5,
+            s=5
+        )
+        axes[1, i].set_title(f"Reverse t = {step}")
+        axes[1, i].set_xlim(-4, 4)
+        axes[1, i].set_ylim(-4, 4)
+
+    plt.suptitle("Forward and Reverse Diffusion on Swiss Roll\nTop: Forward, Bottom: Reverse")
+    plt.tight_layout()
+    plt.show()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run diffusion model tests")
     parser.add_argument("--test", type=str, help="Run a specific test by name")
