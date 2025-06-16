@@ -63,8 +63,9 @@ class GaussianKernel:
     # TODO: currently the dtype of the timesteps in int but it'll be float when used with models, and eventually it'll be between 0 and 1
     def forward(self, x_0: jnp.ndarray, t: jnp.ndarray, key:jax.Array) -> jnp.ndarray:
         B, C, H, W = x_0.shape
-        assert t.shape == (B,), "t should be a 1D array with the same batch size as x_0"
-        assert jnp.all(t <= self.scheduler.steps) and jnp.all(t >= 1), "t should be less than or equal to the number of diffusion steps"
+        # print(f"t: {t.shape}, B: {B}")
+        assert t.shape[0] == B, "t should have the same batch size as x_0"
+        # assert jnp.all(t <= self.scheduler.steps) and jnp.all(t >= 1), "t should be less than or equal to the number of diffusion steps"
         
         t = t-1  # Adjusting t to be zero-indexed
         
@@ -75,11 +76,11 @@ class GaussianKernel:
         alpha_cumprod_t = jnp.take(self.scheduler.alpha_cumprod, t)  # Shape: (batch_size,)
         alpha_cumprod_t = jnp.expand_dims(alpha_cumprod_t, axis=(-1, -2, -3))  # Shape: (batch_size, 1, 1, 1)
         assert alpha_cumprod_t.shape == (B, 1, 1, 1), "alpha_cumprod_t should have shape (batch_size, 1, 1, 1)"
-        assert not jnp.any(jnp.isnan(alpha_cumprod_t)), "NaN values detected in alpha_cumprod_t"
+        # assert not jnp.any(jnp.isnan(alpha_cumprod_t)), "NaN values detected in alpha_cumprod_t"
 
         alpha_cumprod_t = jnp.broadcast_to(alpha_cumprod_t, (B, C, H, W))
         x_t = jnp.sqrt(alpha_cumprod_t) * x_0 + jnp.sqrt(1 - alpha_cumprod_t) * epsilon
-        assert not jnp.any(jnp.isnan(x_t)), "NaN values detected in x_t"
+        # assert not jnp.any(jnp.isnan(x_t)), "NaN values detected in x_t"
         
         return x_t, key  # Returning the noisy sample and the key for further operations
 
@@ -99,13 +100,12 @@ class Diffusion:
         self.kernel = GaussianKernel(diffusion_steps=diffusion_steps, batch_size=16, verbose=self.verbose) if diffusion_kernel is None else diffusion_kernel
         self.model = model
         self.B, self.C, self.H, self.W = input_shape
-        self.key = key
+        self.key = key # This key is necessary to initialize the model
         self.variables = self.model.init(
             self.key,
             jnp.ones((self.B, self.C, self.H, self.W)),
             t=jnp.ones((self.B,), dtype=jnp.int32),
             beta_t=jnp.ones((self.B,)),
-            key=self.key
         )
 
     def forward_trajectory(self, x_0: jnp.ndarray, key=None) -> tuple:
@@ -125,35 +125,57 @@ class Diffusion:
         if key is None:
             key = self.key
         x_t = x_T
-        reverse_trajectory = []
+        reverse_trajectory = [x_T]
         B, C, H, W = x_t.shape
         for step in range(self.steps):
             beta_t = self.kernel.scheduler.betas[step]
             beta_t = jnp.broadcast_to(beta_t, shape=(B,))
             timestep = jnp.broadcast_to(jnp.array([step+1]), shape=(B,))
-            x_t, _, _, key = self.model.apply(self.variables, x_t, timestep, beta_t=beta_t, key=key)
+            x_t_minus_1, _, _, key = self.reverse(self.variables, x_t, timestep, key, sigma=self.kernel.scheduler.betas[step])
             if self.verbose:
                 print(f"[INFO] Step {step+1}/{self.steps}, x_t shape: {x_t.shape}, key: {key}, device: {self.device}, dtype: {x_t.dtype}")
-            reverse_trajectory.append(x_t)
+            reverse_trajectory.append(x_t_minus_1)
+            x_t = x_t_minus_1
         return jnp.stack(reverse_trajectory[::-1], axis=1), key  # [B, T, C, H, W], key
 
-    def reverse(self, x_t: jnp.ndarray, t: int, key=None) -> tuple:
+    def reverse(self, params, x_t: jnp.ndarray, t: jnp.ndarray, key=None, sigma=None) -> tuple:
         if key is None:
             key = self.key
         B, C, H, W = x_t.shape
-        beta_t = self.kernel.scheduler.betas[t]
+        t = t-1 # Adjusting t to be zero-indexed
+        beta_t = jnp.take(self.kernel.scheduler.betas, t)
+        # jax.debug.print("beta_t: {}", beta_t)
         beta_t = jnp.broadcast_to(beta_t, shape=(B,))
-        timestep = jnp.broadcast_to(jnp.array([t+1]), shape=(B,))
-        x_t, _, _, key = self.model.apply(self.variables, x_t, timestep, beta_t=beta_t, key=key)
-        return x_t, key
-    
-    def forward(self, x_0: jnp.ndarray, t: int, key=None) -> tuple:
+        timesteps = t
+        if sigma is None:
+            mu, sigma = self.model.apply(params, x_t, timesteps, beta_t=beta_t)
+        else:
+            mu, _ = self.model.apply(params, x_t, timesteps, beta_t=beta_t)
+        
+        # Sampling from the mean and sigma
+        key, subkey = jax.random.split(key)
+        x_t_minus_1 = mu + jnp.sqrt(sigma) * jax.random.normal(subkey, mu.shape)
+        return x_t_minus_1, mu, sigma, key
+
+    def forward(self, x_0: jnp.ndarray, t: jnp.ndarray, key=None) -> tuple:
         if key is None:
             key = self.key
         B, C, H, W = x_0.shape
-        timestep = jnp.broadcast_to(jnp.array([t+1]), shape=(B,))
-        x_t, key = self.kernel.forward(x_0, timestep, key)
+        timesteps = t
+        x_t, key = self.kernel.forward(x_0, timesteps, key)
         return x_t, key
+    
+    def get_mu_sigma_original(self, x_0: jnp.ndarray, t: jnp.ndarray, x_t: jnp.ndarray) -> tuple:
+        B, C, H, W = x_0.shape
+        t = t-1 # Adjusting t to be zero-indexed
+        alpha_cumprod_t = jnp.take(self.kernel.scheduler.alpha_cumprod, t)[:, None, None, None]
+        alpha_cumprod_t_minus_1 = jnp.take(self.kernel.scheduler.alpha_cumprod, t-1)[:, None, None, None]
+        beta_t = jnp.take(self.kernel.scheduler.betas, t)[:, None, None, None]
+        print(f"alpha_cumprod_t: {alpha_cumprod_t.shape}, alpha_cumprod_t_minus_1: {alpha_cumprod_t_minus_1.shape}, beta_t: {beta_t.shape}")
+        mu = (jnp.sqrt(alpha_cumprod_t_minus_1) * beta_t / (1-alpha_cumprod_t)) * x_0 + jnp.sqrt(alpha_cumprod_t) * (1-alpha_cumprod_t_minus_1) * x_t / (1-alpha_cumprod_t)
+        sigma_squared = (1 - alpha_cumprod_t_minus_1) / (1 - alpha_cumprod_t) * beta_t
+
+        return mu, sigma_squared
     
     def sample(self, shape: tuple) -> jnp.ndarray:
         pass

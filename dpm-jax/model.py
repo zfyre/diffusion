@@ -120,7 +120,7 @@ class ReverseDiffusion(nn.Module):
         return x # (B, 2*features*C, H, W)
 
     @nn.compact
-    def __call__(self, x: jnp.ndarray, t: jnp.ndarray, beta_t: jnp.ndarray, key: jnp.ndarray):
+    def __call__(self, x: jnp.ndarray, t: jnp.ndarray, beta_t: jnp.ndarray):
         B, C, H, W = x.shape
         assert C == self.channels, "Number of channels in input must match model's channels"
         x_init = x
@@ -130,6 +130,7 @@ class ReverseDiffusion(nn.Module):
         y_sigma = y_sigma.reshape(B, self.features, self.channels, H, W) # (B, features, C, H, W)
 
         # print(t.shape, self.bump_weights_all.shape)
+        # jax.debug.print("t: {}, self.bump_weights_all.shape: {}", t, self.bump_weights_all.shape)
         g = self.bump_weights_all[t] # (1, features)
         # for broadcasting
         g = g[:, :, None, None, None] # (1, features, 1, 1, 1)
@@ -139,14 +140,7 @@ class ReverseDiffusion(nn.Module):
         beta_t = beta_t[:, None, None, None]
         sigma = nn.sigmoid(z_sigma + jnp.log(jnp.exp(beta_t) - 1))
         mu = (x_init - z_mu) * (1 - sigma) + z_mu
-
-        # Sampling from the mean and sigma
-        key, subkey = jax.random.split(key)
-        x_t = mu + sigma * jax.random.normal(subkey, mu.shape)
-
-        return x_t, mu, sigma, key
-
-
+        return mu, sigma
 
 
 if __name__ == "__main__":
@@ -184,5 +178,5 @@ if __name__ == "__main__":
     beta_t = jnp.array([0.0, 0.0])
     key = random.key(0)
     variables = model.init(key, x, t=t, beta_t=beta_t, key=key)
-    x_t, mu, sigma, key = model.apply(variables, x, t=t, beta_t=beta_t, key=key)
+    x_t, mu, sigma, key = model.apply(variables, x, t=t, beta_t=beta_t)
     print("ReverseDiffusion output shape:", "mu:", mu.shape, "sigma:", sigma.shape, "key:", key)

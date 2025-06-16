@@ -1,2 +1,4 @@
 /dpm/__pycache__
 .env
+/dpm/checkpoints
+/reference
