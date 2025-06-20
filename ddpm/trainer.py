@@ -14,8 +14,8 @@ class Trainer:
         dataloader: DataLoader,
         optimizer: optim.Optimizer,
         num_epochs: int = 200,
-        show_samples: Callable = None, # TODO: Handle this more elegantly
-        num_show_samples: int = 100, # TODO: Handle this more elegantly
+        show_samples_fn: Callable = None, # TODO: Handle this more elegantly
+        num_show_samples: int = 1, # TODO: Handle this more elegantly
         save_path: str = 'checkpoints'
     ):
         self.model = model
@@ -23,7 +23,7 @@ class Trainer:
         self.dataloader = dataloader
         self.num_epochs = num_epochs
         self.optimizer = optimizer
-        self.show_samples = show_samples
+        self.show_samples_fn = show_samples_fn
         self.num_show_samples = num_show_samples
         self.save_path = save_path
         os.makedirs(self.save_path, exist_ok=True)
@@ -49,6 +49,7 @@ class Trainer:
             num_batches = 0
             for (batch_idx, batch) in tqdm(enumerate(self.dataloader), total=len(self.dataloader)):
                 if batch_idx == 0 and epoch == 1:
+                    print(f"Batch shape: {batch.shape}")
                     self.input_shape = batch.shape
                 loss = self.train_step(batch)
                 epoch_loss = epoch_loss + loss
@@ -58,7 +59,7 @@ class Trainer:
 
             print(f"Epoch {epoch}/{self.num_epochs}, Loss: {average_loss}")
 
-            if epoch % 20 == 0:
+            if epoch % 10 == 0: # TODO: Handle this more elegantly
                 self.model.eval()
                 self.visualize_samples(epoch, num_samples=self.num_show_samples)
 
@@ -70,7 +71,7 @@ class Trainer:
         torch.save(self.model.state_dict(), os.path.join(self.save_path, 'model.pth'))
         print(f"Saved model to {os.path.join(self.save_path, 'model.pth')}")        
     
-    def visualize_samples(self, epoch: int, num_samples: int = 100):
+    def visualize_samples(self, epoch: int, num_samples: int = 1):
         new_shape = list(self.input_shape)
         new_shape[0] = num_samples
         x_T = torch.randn(tuple(new_shape), generator=self.sampler.generator, device=self.device)
@@ -86,8 +87,8 @@ class Trainer:
             )
             samples.append(x_t)
         
-        if self.show_samples is not None:
-            self.show_samples(samples, epoch)
+        if self.show_samples_fn is not None:
+            self.show_samples_fn(samples, epoch)
 
     def train_step(self, batch: torch.Tensor) -> torch.Tensor:
         # Shift the batch to GPU from CPU (if needed)

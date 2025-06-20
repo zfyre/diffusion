@@ -4,21 +4,21 @@ TODO: Implement a general config file for the training process
 
 from ddpm.trainer import Trainer
 from ddpm.ddpm import DDPMSampler
-from ddpm.model import SimpleModel
-from ddpm.dataloaders import get_swiss_roll_dataloader
+from ddpm.model import SimpleModel, MNISTModel
+from ddpm.dataloaders import get_swiss_roll_dataloader, get_mnist_dataloader
 from torch.utils.data import DataLoader, TensorDataset
 import torch
 import torch.optim as optim
 
 # Hyperparameters
-batch_size = 250
+batch_size = 256
 num_samples = 100000
 noise = 0.05
 num_workers = 0
 num_epochs = 500
-learning_rate = 5e-4
-num_training_timesteps = 50
-num_inference_timesteps = 25
+learning_rate = 3e-4
+num_training_timesteps = 100
+num_inference_timesteps = 100
 
 # Set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -36,33 +36,44 @@ sampler.set_inference_timesteps(num_inference_timesteps=num_inference_timesteps)
 
 print(f"Using sampler: {sampler}")
 
-
 # Create model
-model = SimpleModel(in_channels=2, out_channels=2, hidden_size=64, num_training_timesteps=num_training_timesteps)
-model.to(device)
-print(f"Using model: {model}")
+# simple_swissroll_model = SimpleModel(in_channels=2, out_channels=2, hidden_size=64, num_training_timesteps=num_training_timesteps).to(device)
+mnist_model = MNISTModel(num_training_timesteps=num_training_timesteps).to(device)
+
+# print(f"Using model: {simple_swissroll_model}")
+print(f"Using model: {mnist_model}")
+
+# Create optimizer
+optimizer = optim.Adam(mnist_model.parameters(), lr=learning_rate)
 
 # Create dataloader
-optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-dataloader = get_swiss_roll_dataloader(
+swiss_roll_dataloader = get_swiss_roll_dataloader(
     batch_size=batch_size,
     num_samples=num_samples,
     noise=noise,
     shuffle=True,
     num_workers=num_workers
 )
+mnist_dataloader = get_mnist_dataloader(
+    batch_size=batch_size,
+    num_samples=num_samples,
+    shuffle=True,
+    num_workers=num_workers
+)
 
 # Get the dataset to access the show_samples function
-dataset = dataloader.dataset
+swiss_roll_dataset = swiss_roll_dataloader.dataset
+mnist_dataset = mnist_dataloader.dataset
 
 # Create trainer
 trainer = Trainer(
-    model=model, 
+    model=mnist_model, 
     sampler=sampler, 
-    dataloader=dataloader, 
+    dataloader=mnist_dataloader, 
     optimizer=optimizer,
     num_epochs=num_epochs,
-    show_samples=dataset.show_samples,
+    show_samples_fn=mnist_dataset.show_samples,
+    num_show_samples=1,
 )
 
 # Start training

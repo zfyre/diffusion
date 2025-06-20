@@ -93,3 +93,41 @@ class SimpleModel(nn.Module):
         x = self.fc3(x)
         
         return x 
+ 
+class MNISTModel(nn.Module):
+    def __init__(self, num_training_timesteps=1000):
+        super().__init__()
+        self.sinusoid_pos_emb = SinusoidPosEmb(
+            dim=28*28,
+            num_training_timesteps=num_training_timesteps
+        )
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+        )
+        self.max_pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv2 = nn.Sequential(
+            nn.ConvTranspose2d(128, 64, kernel_size=3, padding=1, output_padding=1, stride=2),
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 1, kernel_size=3, padding=1, output_padding=0, stride=1),
+            nn.ReLU()
+        )
+
+    def forward(self, x, timesteps: torch.IntTensor):
+        """
+        Args:
+            x: (batch_size, 28, 28)
+            timesteps: torch.IntTensor; (batch_size,)
+        """
+        x = x.unsqueeze(1) # (batch_size, 1, 28, 28)
+        time_emb = self.sinusoid_pos_emb(timesteps).reshape(x.shape[0], 1, 28, 28) # (batch_size, 1, 28, 28)
+        x = x + time_emb
+        x = self.conv1(x)
+        x = self.max_pool(x)
+        time_emb = time_emb.reshape(x.shape[0], -1, 14, 14) # (batch_size, 4, 14, 14)
+        x = x + time_emb.repeat(1, 128//4, 1, 1) 
+        x = self.conv2(x)
+        return x.squeeze(1)
