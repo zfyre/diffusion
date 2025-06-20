@@ -6,7 +6,7 @@ from ddpm.ddpm import DDPMSampler
 from tqdm import tqdm
 from typing import Callable
 import matplotlib.pyplot as plt
-
+import os
 class Trainer:
     def __init__(self,
         model: nn.Module,
@@ -14,8 +14,9 @@ class Trainer:
         dataloader: DataLoader,
         optimizer: optim.Optimizer,
         num_epochs: int = 200,
-        show_samples: Callable = None,
-        num_show_samples: int = 100
+        show_samples: Callable = None, # TODO: Handle this more elegantly
+        num_show_samples: int = 100, # TODO: Handle this more elegantly
+        save_path: str = 'checkpoints'
     ):
         self.model = model
         self.sampler = sampler
@@ -24,7 +25,8 @@ class Trainer:
         self.optimizer = optimizer
         self.show_samples = show_samples
         self.num_show_samples = num_show_samples
-
+        self.save_path = save_path
+        os.makedirs(self.save_path, exist_ok=True)
         # Set device
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model.to(self.device)
@@ -61,12 +63,12 @@ class Trainer:
                 self.visualize_samples(epoch, num_samples=self.num_show_samples)
 
         plt.plot(losses)
-        plt.savefig('losses.png', dpi=150, bbox_inches='tight')
-        print(f"Saved losses to losses.png")
+        plt.savefig(os.path.join(self.save_path, 'losses.png'), dpi=150, bbox_inches='tight')
+        print(f"Saved losses to {os.path.join(self.save_path, 'losses.png')}")
         plt.close()
 
-            
-        
+        torch.save(self.model.state_dict(), os.path.join(self.save_path, 'model.pth'))
+        print(f"Saved model to {os.path.join(self.save_path, 'model.pth')}")        
     
     def visualize_samples(self, epoch: int, num_samples: int = 100):
         new_shape = list(self.input_shape)

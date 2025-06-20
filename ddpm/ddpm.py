@@ -12,6 +12,7 @@ class DDPMSampler:
         self.dtype = torch.float32 # TODO: check if this is correct
         self.generator = generator
         self.num_training_timesteps = num_training_timesteps
+        self.num_inference_timesteps = None
         
         self.timesteps = torch.arange(
             start=0,
@@ -25,6 +26,16 @@ class DDPMSampler:
         self.betas = self.scheduler(self.beta_schedule)
         self.alphas = 1.0 - self.betas
         self.alpha_cumprod = self.alphas.cumprod(dim=0)
+    
+    def __str__(self):
+        return f"""
+        DDPM Sampler:
+            - num_training_timesteps: [0, {self.num_training_timesteps})
+            - num_inference_timesteps: {self.num_inference_timesteps}
+            - beta_schedule: {self.beta_schedule}
+            - beta_bounds: {self.beta_bounds}
+            - dtype: {self.dtype}
+        """
 
     def scheduler(self, schedule_type: str = 'linear') -> torch.FloatTensor:
         if schedule_type == 'linear':

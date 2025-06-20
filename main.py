@@ -1,3 +1,7 @@
+"""
+TODO: Implement a general config file for the training process
+"""
+
 from ddpm.trainer import Trainer
 from ddpm.ddpm import DDPMSampler
 from ddpm.model import SimpleModel
@@ -13,8 +17,8 @@ noise = 0.05
 num_workers = 0
 num_epochs = 500
 learning_rate = 5e-4
-num_training_timesteps = 100
-num_inference_timesteps = 50
+num_training_timesteps = 50
+num_inference_timesteps = 25
 
 # Set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -27,11 +31,16 @@ sampler = DDPMSampler(
     beta_schedule='linear',
     beta_bounds=(1e-4, 2e-2),
 )
+# Set the inference timesteps
 sampler.set_inference_timesteps(num_inference_timesteps=num_inference_timesteps)
+
+print(f"Using sampler: {sampler}")
+
 
 # Create model
 model = SimpleModel(in_channels=2, out_channels=2, hidden_size=64, num_training_timesteps=num_training_timesteps)
 model.to(device)
+print(f"Using model: {model}")
 
 # Create dataloader
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
