@@ -61,7 +61,9 @@ class Trainer:
 
             if epoch % 10 == 0: # TODO: Handle this more elegantly
                 self.model.eval()
-                self.visualize_samples(epoch, num_samples=self.num_show_samples)
+                samples = self.sample(num_samples=self.num_show_samples)
+                if self.show_samples_fn is not None:
+                    self.show_samples_fn(samples, epoch)
 
         plt.plot(losses)
         plt.savefig(os.path.join(self.save_path, 'losses.png'), dpi=150, bbox_inches='tight')
@@ -71,7 +73,7 @@ class Trainer:
         torch.save(self.model.state_dict(), os.path.join(self.save_path, 'model.pth'))
         print(f"Saved model to {os.path.join(self.save_path, 'model.pth')}")        
     
-    def visualize_samples(self, epoch: int, num_samples: int = 1):
+    def sample(self, num_samples: int = 1) -> list[torch.Tensor]:
         new_shape = list(self.input_shape)
         new_shape[0] = num_samples
         x_T = torch.randn(tuple(new_shape), generator=self.sampler.generator, device=self.device)
@@ -80,21 +82,21 @@ class Trainer:
         for t in tqdm(self.sampler.timesteps):
             timesteps = torch.tensor([t]*num_samples, device=self.device, dtype=torch.int64)
             model_outs = self.model(x_t, timesteps)
-            x_t = self.sampler.denoise_step(
+            x_t, mean_pred, variance_pred, z = self.sampler.denoise_step(
                 timestep=t,
                 model_outs=model_outs,
                 x_t=x_t
             )
             samples.append(x_t)
-        
-        if self.show_samples_fn is not None:
-            self.show_samples_fn(samples, epoch)
+        return samples
 
     def train_step(self, batch: torch.Tensor) -> torch.Tensor:
         # Shift the batch to GPU from CPU (if needed)
         batch = batch.to(self.device)
 
-        # Sample timesteps randomly from (0, T) of shape (batch_size,)
+        # Sample timesteps randomly from [1, T) of shape (batch_size,), note that our timesteps are 0-indexed
+        # Reverse Process starts from t=1, according to DDPM paper. -> L1:T-1
+        # And for t=0, the paper trains an encoder to predict the noise.
         timesteps = torch.randint(
             low=0,
             high=self.sampler.num_training_timesteps,
@@ -102,6 +104,10 @@ class Trainer:
             device=self.device,
             dtype=torch.int64
         )
+        """
+        TODO: Add the case where the L_0 loss is modeled differently, right now we are using the same model.
+        The reverse model should incorporate the discrete log-likelihood prediction for images.
+        """
 
         # Add noise to the batch
         noisy_samples, noise = self.sampler.add_noise(batch, timesteps)

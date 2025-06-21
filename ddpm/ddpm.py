@@ -67,7 +67,12 @@ class DDPMSampler:
         prev_t = timestep - self.num_training_timesteps // self.num_inference_timesteps
         return prev_t
 
-    def denoise_step(self, timestep: int, model_outs: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
+    def denoise_step(self,
+            timestep: int,
+            model_outs: torch.Tensor,
+            x_t: torch.Tensor,
+            z_noise: torch.FloatTensor = None #TODO: If later we want to make this function deterministic we an pass our own noise
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             timestep: The timestep to denoise where 1 < t <= T
@@ -75,7 +80,7 @@ class DDPMSampler:
             x_t: The noisy samples
 
         Returns:
-            The denoised samples
+            The denoised samples, model mean, variance, and the noise used for denoising
         """
         t = timestep
         prev_t = self._get_prev_timestep(t)
@@ -101,17 +106,32 @@ class DDPMSampler:
             sqrt_one_minus_alpha_cumprod_t = sqrt_one_minus_alpha_cumprod_t.unsqueeze(-1)
 
         mean = (1/sqrt_alpha_t) * (x_t - beta_t / sqrt_one_minus_alpha_cumprod_t * model_outs)
+
+        """
+        We are using the variance sigma_t^2 = beta_t * (1 - alpha_cumprod_t_prev) / (1 - alpha_cumprod_t)
+        We can also use only beta_t as the variance.
+        TODO: Add a method to get the variance and mean from/without the model outputs, so that we can use different scenarious in sampling.
+        """
         variance = beta_t * (1 - alpha_cumprod_t_prev) / (1 - alpha_cumprod_t)
         variance = variance.clamp(min=1e-20) # Clamping the variance to avoid division by zero
 
         while len(variance.shape) < len(x_t.shape):
             variance = variance.unsqueeze(-1)
 
-        z = torch.randn(x_t.shape, generator=self.generator, device=x_t.device, dtype=x_t.dtype)
+        if z_noise is None:
+            z = torch.randn(x_t.shape, generator=self.generator, device=x_t.device, dtype=x_t.dtype)
+        else:
+            assert z_noise.shape == x_t.shape, f"Noise shape {z_noise.shape} does not match x_t shape {x_t.shape}"
+            z = z_noise
+
         x_denoised = mean + (variance ** 0.5) * z
-        return x_denoised
+        return x_denoised, mean, variance, z
     
-    def add_noise(self, original_samples: torch.FloatTensor, timesteps: torch.IntTensor) -> tuple[torch.FloatTensor, torch.FloatTensor]:
+    def add_noise(self,
+            original_samples: torch.FloatTensor,
+            timesteps: torch.IntTensor,
+            noise: torch.FloatTensor = None #TODO: If later we want to make this function deterministic we an pass our own noise
+    ) -> tuple[torch.FloatTensor, torch.FloatTensor]:
         # Setting the device and dtype of the tensors
         alpha_cumprod = self.alpha_cumprod.to(device=original_samples.device, dtype=original_samples.dtype)
         timesteps = timesteps.to(device=original_samples.device)
@@ -125,12 +145,13 @@ class DDPMSampler:
         while len(sqrt_one_minus_alpha_cumprod_t.shape) < len(original_samples.shape):
             sqrt_one_minus_alpha_cumprod_t = sqrt_one_minus_alpha_cumprod_t.unsqueeze(-1) # Shape: (batch_size, 1,  ...)
 
-        noise = torch.randn(
-            original_samples.shape,
-            generator=self.generator,
-            device=original_samples.device,
-            dtype=original_samples.dtype
-        )
+        if noise is None:
+            noise = torch.randn(
+                original_samples.shape,
+                generator=self.generator,
+                device=original_samples.device,
+                dtype=original_samples.dtype
+            )
         noisy_samples = sqrt_alpha_cumprod_t * original_samples + sqrt_one_minus_alpha_cumprod_t * noise
         return noisy_samples, noise
 
